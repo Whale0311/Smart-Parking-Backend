@@ -5,7 +5,8 @@ import {
   deleteCard,
   adminRechargeCard,
   recordParkingTransaction,
-  getCardHistoryForAdmin
+  getCardHistoryForAdmin,
+  getCardDetails
 } from '../controllers/adminController';
 
 const router = Router();
@@ -14,6 +15,7 @@ const router = Router();
 router.post('/create_user', createUser);
 
 // Card management
+router.get('/cards/:card_id', getCardDetails);
 router.post('/cards/create', registerCard);
 router.delete('/cards/:card_id', deleteCard);
 router.post('/cards/:card_id/recharge', adminRechargeCard);

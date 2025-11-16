@@ -7,13 +7,28 @@ import mongoose from 'mongoose';
 // ADMIN: POST /users
 export const createUser = async (req: Request, res: Response) => {
     try {
-        const { user_id, name, email, password } = req.body;
+        const { user_id, name, email, password, role } = req.body;
+
+        if (!user_id || !name || !email || !password) {
+            return res.status(400).json({ 
+                status: 'error', 
+                message: 'Tất cả các trường đều bắt buộc' 
+            });
+        }
+        
+        if (role && !['user', 'admin'].includes(role)) {
+            return res.status(400).json({ 
+                status: 'error', 
+                message: 'Role phải là "user" hoặc "admin"' 
+            });
+        }
 
         const newUser = new User({
             user_id,
             name,
             email,
-            password, 
+            password,
+            role,
         });
 
         await newUser.save();
@@ -25,6 +40,7 @@ export const createUser = async (req: Request, res: Response) => {
                 user_id: newUser.user_id,
                 name: newUser.name,
                 email: newUser.email,
+                role: newUser.role,
                 created_at: newUser.createdAt,
             },
         });
@@ -34,6 +50,29 @@ export const createUser = async (req: Request, res: Response) => {
         }
         res.status(400).json({ status: 'error', message: (error as Error).message });
     }
+};
+
+export const getCardDetails = async (req: Request, res: Response) => {
+  try {
+    const card = await Card.findOne({ card_id: req.params.card_id }).populate('user', 'user_id name email');
+    if (!card) {
+      return res.status(404).json({ status: 'error', message: 'Card not found' });
+    }
+    res.status(200).json({
+      status: 'success',
+      data: {
+        card_id: card.card_id,
+        user: card.user,
+        license_plate: card.license_plate,
+        owner_name: card.owner_name,
+        balance: card.balance,
+        is_active: card.is_active,
+        created_at: card.createdAt,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: (error as Error).message });
+  }
 };
 
 // ADMIN: POST /cards/create
