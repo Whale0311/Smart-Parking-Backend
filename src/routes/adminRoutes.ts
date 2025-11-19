@@ -4,9 +4,12 @@ import {
   registerCard,
   deleteCard,
   adminRechargeCard,
-  recordParkingTransaction,
   getCardHistoryForAdmin,
-  getCardDetails
+  getCardDetails,
+  reactivateCard,
+  parkingCheckIn,
+  parkingCheckOut,
+  getParkingStatus
 } from '../controllers/adminController';
 
 const router = Router();
@@ -15,11 +18,16 @@ const router = Router();
 router.post('/create_user', createUser);
 
 // Card management
+router.post('/cards', registerCard);
 router.get('/cards/:card_id', getCardDetails);
-router.post('/cards/create', registerCard);
 router.delete('/cards/:card_id', deleteCard);
+router.post('/cards/:card_id/reactivate', reactivateCard);
 router.post('/cards/:card_id/recharge', adminRechargeCard);
-router.post('/cards/:card_id/parking', recordParkingTransaction);
 router.get('/cards/:card_id/history', getCardHistoryForAdmin);
+
+// Parking management
+router.post('/cards/:card_id/parking/checkin', parkingCheckIn);
+router.post('/cards/:card_id/parking/checkout', parkingCheckOut);
+router.get('/cards/:card_id/parking/status', getParkingStatus);
 
 export default router;

@@ -2,7 +2,11 @@ import { Request, Response } from 'express';
 import Card from '../models/Card';
 import Transaction from '../models/Transaction';
 import User from '../models/User'; 
+import ParkingSession from '../models/ParkingSession';
 import mongoose from 'mongoose';
+
+// Cấu hình giá đỗ xe
+const PARKING_FEE_PER_HOUR = 5000;  
 
 // ADMIN: POST /users
 export const createUser = async (req: Request, res: Response) => {
@@ -114,14 +118,14 @@ export const registerCard = async (req: Request, res: Response) => {
     }
 };
 
-// ADMIN: DELETE /cards/{card_id}
+// ADMIN: DELETE /cards/delete/{card_id}
 export const deleteCard = async (req: Request, res: Response) => {
     try {
-        const card = await Card.findOneAndUpdate(
-            { card_id: req.params.card_id },
-            { is_active: false },
-            { new: true }
-        );
+        const { card_id } = req.params;
+        const card = await Card.findOne({ card_id });
+        if (!card) {
+            return res.status(404).json({ status: 'error', message: 'Card not found' });
+        }
 
         if (!card) {
             return res.status(404).json({ status: 'error', message: 'Card not found' });
@@ -136,19 +140,46 @@ export const deleteCard = async (req: Request, res: Response) => {
     }
 };
 
+// POST /cards/{card_id}/reactivate
+export const reactivateCard = async (req: Request, res: Response) => {
+    try {
+        const { card_id } = req.params;
+        const card = await Card.findOne({ card_id });
+        if (!card) {
+            return res.status(404).json({ status: 'error', message: 'Card not found' });
+        }
+
+        if (card.is_active) {
+            return res.status(400).json({ status: 'error', message: 'Card is already active' });
+        }
+
+        card.is_active = true;
+        await card.save();
+
+        res.status(200).json({
+            status: 'success',
+            message: `Đã kích hoạt lại thẻ ${card.card_id} thành công.`,
+        });
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: (error as Error).message });
+    }
+}
+
 // ADMIN: POST /cards/{card_id}/recharge
 export const adminRechargeCard = async (req: Request, res: Response) => {
     const session = await mongoose.startSession();
     session.startTransaction();
     try {
-        const { amount, description } = req.body;
+        const { amount, payment_method } = req.body;
         if (!amount || amount <= 0) {
+            await session.abortTransaction();
             return res.status(400).json({ status: 'error', message: 'Invalid amount' });
         }
 
-        const card = await Card.findOne({ card_id: req.params.card_id }).session(session);
+        const card = await Card.findOne({ card_id: req.params.card_id, is_active: true }).session(session);
         if (!card) {
-            throw new Error('Card not found');
+            await session.abortTransaction();
+            return res.status(400).json({ status: 'error', message: 'Invalid amount' });
         }
 
         card.balance += amount;
@@ -158,7 +189,8 @@ export const adminRechargeCard = async (req: Request, res: Response) => {
             card: card._id,
             type: 'RECHARGE',
             amount: amount,
-            description: description || 'Nạp tiền tại quầy',
+            payment_method: payment_method || 'ONLINE',
+            description: `Nạp tiền qua ${payment_method || 'ONLINE'}`,
         });
         await transaction.save({ session });
 
@@ -168,7 +200,7 @@ export const adminRechargeCard = async (req: Request, res: Response) => {
             message: 'Nạp tiền thành công.',
             card_id: card.card_id,
             new_balance: card.balance,
-            transaction_id: transaction._id,
+            transaction_id: transaction.transaction_id
         });
     } catch (error) {
         await session.abortTransaction();
@@ -178,48 +210,227 @@ export const adminRechargeCard = async (req: Request, res: Response) => {
     }
 };
 
-// ADMIN: POST /cards/{card_id}/parking
-export const recordParkingTransaction = async (req: Request, res: Response) => {
+// ADMIN: POST /cards/{card_id}/parking/checkin
+export const parkingCheckIn = async (req: Request, res: Response) => {
     const session = await mongoose.startSession();
     session.startTransaction();
     try {
-        const { amount, license_plate, location, timestamp_in, timestamp_out } = req.body;
-        const parkingFee = Math.abs(amount) * -1; // Ensure amount is negative
+        const { location } = req.body;
+        const { card_id } = req.params;
 
-        const card = await Card.findOne({ card_id: req.params.card_id, is_active: true }).session(session);
+        if (!location) {
+            await session.abortTransaction();
+            return res.status(400).json({ 
+                status: 'error', 
+                message: 'Location là bắt buộc' 
+            });
+        }
+
+        const card = await Card.findOne({ card_id, is_active: true }).session(session);
         if (!card) {
-            throw new Error('Card not found or is inactive');
-        }
-        if (card.balance < Math.abs(parkingFee)) {
-            throw new Error('Insufficient balance');
+            await session.abortTransaction();
+            return res.status(404).json({ 
+                status: 'error', 
+                message: 'Card not found or is inactive' 
+            });
         }
 
-        card.balance += parkingFee;
-        await card.save({ session });
+        // Kiểm tra xem có session đang active không
+        const activeSession = await ParkingSession.findOne({ 
+            card: card._id, 
+            status: 'ACTIVE' 
+        }).session(session);
 
-        const transaction = new Transaction({
+        if (activeSession) {
+            await session.abortTransaction();
+            return res.status(400).json({ 
+                status: 'error', 
+                message: 'Thẻ này đang có phiên đỗ xe chưa kết thúc',
+                data: {
+                    location: activeSession.location,
+                    timestamp_in: activeSession.timestamp_in
+                }
+            });
+        }
+
+        // Tạo parking session mới
+        const parkingSession = new ParkingSession({
             card: card._id,
-            type: 'PARKING',
-            amount: parkingFee,
-            description: `Gửi xe tại ${location}`,
-            timestamp_in,
-            timestamp_out,
+            location,
+            timestamp_in: new Date(),
+            status: 'ACTIVE'
         });
-        await transaction.save({ session });
+        await parkingSession.save({ session });
 
         await session.commitTransaction();
         res.status(200).json({
             status: 'success',
-            message: 'Trừ tiền gửi xe thành công.',
-            card_id: card.card_id,
-            new_balance: card.balance,
-            transaction_id: transaction._id,
+            message: 'Check-in thành công',
+            data: {
+                session_id: parkingSession._id,
+                card_id: card.card_id,
+                location: parkingSession.location,
+                timestamp_in: parkingSession.timestamp_in,
+                current_balance: card.balance
+            }
         });
     } catch (error) {
         await session.abortTransaction();
         res.status(500).json({ status: 'error', message: (error as Error).message });
     } finally {
         session.endSession();
+    }
+};
+
+// ADMIN: POST /cards/{card_id}/parking/checkout
+export const parkingCheckOut = async (req: Request, res: Response) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    try {
+        const { card_id } = req.params;
+
+        const card = await Card.findOne({ card_id, is_active: true }).session(session);
+        if (!card) {
+            await session.abortTransaction();
+            return res.status(404).json({ 
+                status: 'error', 
+                message: 'Card not found or is inactive' 
+            });
+        }
+
+        // Tìm session đang active
+        const activeSession = await ParkingSession.findOne({ 
+            card: card._id, 
+            status: 'ACTIVE' 
+        }).session(session);
+
+        if (!activeSession) {
+            await session.abortTransaction();
+            return res.status(400).json({ 
+                status: 'error', 
+                message: 'Không tìm thấy phiên đỗ xe đang hoạt động cho thẻ này' 
+            });
+        }
+
+        // Tính toán thời gian và phí
+        const timeOut = new Date();
+        const timeIn = activeSession.timestamp_in;
+        const durationMs = timeOut.getTime() - timeIn.getTime();
+        const durationHours = Math.ceil(durationMs / (1000 * 60 * 60)); // Làm tròn lên giờ tiếp theo
+        const parkingFee = -(durationHours * PARKING_FEE_PER_HOUR);
+
+        // Kiểm tra số dư
+        if (card.balance < Math.abs(parkingFee)) {
+            await session.abortTransaction();
+            return res.status(400).json({ 
+                status: 'error', 
+                message: `Số dư không đủ. Cần ${Math.abs(parkingFee)} VNĐ, còn ${card.balance} VNĐ`,
+                data: {
+                    required_amount: Math.abs(parkingFee),
+                    current_balance: card.balance,
+                    shortage: Math.abs(parkingFee) - card.balance
+                }
+            });
+        }
+
+        // Cập nhật session
+        activeSession.timestamp_out = timeOut;
+        activeSession.status = 'COMPLETED';
+        await activeSession.save({ session });
+
+        // Trừ tiền
+        card.balance += parkingFee;
+        await card.save({ session });
+
+        // Tạo transaction
+        const transaction = new Transaction({
+            card: card._id,
+            type: 'PARKING',
+            amount: parkingFee,
+            description: `Gửi xe tại ${activeSession.location} - ${durationHours} giờ`,
+            location: activeSession.location,
+            timestamp_in: timeIn,
+            timestamp_out: timeOut,
+        });
+        await transaction.save({ session });
+
+        await session.commitTransaction();
+        res.status(200).json({
+            status: 'success',
+            message: 'Check-out thành công. Đã trừ tiền gửi xe.',
+            data: {
+                session_id: activeSession._id,
+                card_id: card.card_id,
+                location: activeSession.location,
+                timestamp_in: timeIn,
+                timestamp_out: timeOut,
+                parking_duration_hours: durationHours,
+                parking_fee: Math.abs(parkingFee),
+                previous_balance: card.balance - parkingFee,
+                new_balance: card.balance,
+                transaction_id: transaction.transaction_id
+            }
+        });
+    } catch (error) {
+        await session.abortTransaction();
+        res.status(500).json({ status: 'error', message: (error as Error).message });
+    } finally {
+        session.endSession();
+    }
+};
+
+// ADMIN: GET /cards/{card_id}/parking/status
+export const getParkingStatus = async (req: Request, res: Response) => {
+    try {
+        const { card_id } = req.params;
+
+        const card = await Card.findOne({ card_id });
+        if (!card) {
+            return res.status(404).json({ 
+                status: 'error', 
+                message: 'Card not found' 
+            });
+        }
+
+        const activeSession = await ParkingSession.findOne({ 
+            card: card._id, 
+            status: 'ACTIVE' 
+        });
+
+        if (!activeSession) {
+            return res.status(200).json({
+                status: 'success',
+                message: 'Không có phiên đỗ xe nào đang hoạt động',
+                data: {
+                    card_id: card.card_id,
+                    has_active_session: false,
+                    current_balance: card.balance
+                }
+            });
+        }
+
+        // Tính toán thời gian và phí dự kiến
+        const now = new Date();
+        const durationMs = now.getTime() - activeSession.timestamp_in.getTime();
+        const durationHours = Math.ceil(durationMs / (1000 * 60 * 60));
+        const estimatedFee = durationHours * PARKING_FEE_PER_HOUR;
+
+        res.status(200).json({
+            status: 'success',
+            data: {
+                card_id: card.card_id,
+                has_active_session: true,
+                session_id: activeSession._id,
+                location: activeSession.location,
+                timestamp_in: activeSession.timestamp_in,
+                current_duration_hours: durationHours,
+                estimated_fee: estimatedFee,
+                current_balance: card.balance,
+                sufficient_balance: card.balance >= estimatedFee
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: (error as Error).message });
     }
 };
 
