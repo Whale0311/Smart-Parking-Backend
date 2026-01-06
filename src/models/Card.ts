@@ -1,5 +1,4 @@
 import { Schema, model, Document } from 'mongoose';
-
 export interface ICard extends Document {
   card_id: string;
   user: Schema.Types.ObjectId;
@@ -7,7 +6,9 @@ export interface ICard extends Document {
   owner_name: string;
   balance: number;
   is_active: boolean;
+  vehicle_type: 'car' | 'motorbike';
   createdAt: Date;
+  updatedAt: Date;
 }
 
 const CardSchema = new Schema({
@@ -17,6 +18,14 @@ const CardSchema = new Schema({
   owner_name: { type: String, required: true },
   balance: { type: Number, default: 0 },
   is_active: { type: Boolean, default: true },
+
+  vehicle_type: { 
+      type: String, 
+      enum: ['car', 'motorbike'], 
+      default: 'motorbike'        
+  },
+  // ---------------------
+
 }, { timestamps: true });
 
 export default model<ICard>('Card', CardSchema);

@@ -1,12 +1,26 @@
 import { Request, Response } from 'express';
 import Card from '../models/Card';
 import Transaction from '../models/Transaction';
-import User from '../models/User'; 
+import User from '../models/User';
 import ParkingSession from '../models/ParkingSession';
 import mongoose from 'mongoose';
 
-// Cấu hình giá đỗ xe
-const PARKING_FEE_PER_HOUR = 5000;  
+// Cấu hình giá (Nên đưa vào Config hoặc Database sau này)
+const PARKING_RATES = {
+    motorbike_fixed: 4000,  // 4.000 VNĐ / lượt (xe máy)
+    car_hourly: 5000        // 5.000 VNĐ / giờ (ô tô)
+};
+
+// --- HELPER FUNCTION: Tính phí đỗ xe ---
+const calculateFee = (vehicleType: string, durationHours: number): number => {
+    if (vehicleType === 'motorbike') {
+        return PARKING_RATES.motorbike_fixed;
+    } else {
+        // Ô tô: Tối thiểu tính 1 giờ
+        const billableHours = durationHours > 0 ? durationHours : 1;
+        return billableHours * PARKING_RATES.car_hourly;
+    }
+};
 
 // ADMIN: POST /users
 export const createUser = async (req: Request, res: Response) => {
@@ -14,27 +28,14 @@ export const createUser = async (req: Request, res: Response) => {
         const { user_id, name, email, password, role } = req.body;
 
         if (!user_id || !name || !email || !password) {
-            return res.status(400).json({ 
-                status: 'error', 
-                message: 'Tất cả các trường đều bắt buộc' 
-            });
+            return res.status(400).json({ status: 'error', message: 'Tất cả các trường đều bắt buộc' });
         }
         
         if (role && !['user', 'admin'].includes(role)) {
-            return res.status(400).json({ 
-                status: 'error', 
-                message: 'Role phải là "user" hoặc "admin"' 
-            });
+            return res.status(400).json({ status: 'error', message: 'Role phải là "user" hoặc "admin"' });
         }
 
-        const newUser = new User({
-            user_id,
-            name,
-            email,
-            password,
-            role,
-        });
-
+        const newUser = new User({ user_id, name, email, password, role });
         await newUser.save();
 
         res.status(201).json({
@@ -56,80 +57,129 @@ export const createUser = async (req: Request, res: Response) => {
     }
 };
 
+// GET /cards/{card_id}
 export const getCardDetails = async (req: Request, res: Response) => {
-  try {
-    const card = await Card.findOne({ card_id: req.params.card_id }).populate('user', 'user_id name email');
-    if (!card) {
-      return res.status(404).json({ status: 'error', message: 'Card not found' });
-    }
-    res.status(200).json({
-      status: 'success',
-      data: {
-        card_id: card.card_id,
-        user: card.user,
-        license_plate: card.license_plate,
-        owner_name: card.owner_name,
-        balance: card.balance,
-        is_active: card.is_active,
-        created_at: card.createdAt,
-      },
-    });
-  } catch (error) {
-    res.status(500).json({ status: 'error', message: (error as Error).message });
-  }
-};
-
-// ADMIN: POST /cards/create
-export const registerCard = async (req: Request, res: Response) => {
     try {
-        const { card_id, user_id, license_plate, owner_name, initial_balance = 0 } = req.body;
-
-        const user = await User.findOne({ user_id: user_id });
-        if (!user) {
-            return res.status(404).json({ status: 'error', message: 'User not found' });
+        const card = await Card.findOne({ card_id: req.params.card_id }).populate('user', 'user_id name email');
+        if (!card) {
+            return res.status(404).json({ status: 'error', message: 'Card not found' });
         }
-
-        const newCard = new Card({
-            card_id,
-            user: user._id, 
-            license_plate,
-            owner_name,
-            balance: initial_balance,
-        });
-        await newCard.save();
-
-        res.status(201).json({
+        res.status(200).json({
             status: 'success',
-            message: 'Tạo thẻ thành công.',
             data: {
-                card_id: newCard.card_id,
-                user_id: user.user_id, 
-                owner_name: newCard.owner_name,
-                balance: newCard.balance,
-                is_active: newCard.is_active,
-                created_at: newCard.createdAt,
+                card_id: card.card_id,
+                user: card.user,
+                license_plate: card.license_plate,
+                owner_name: card.owner_name,
+                vehicle_type: card.vehicle_type, // Bổ sung vehicle_type
+                balance: card.balance,
+                is_active: card.is_active,
+                created_at: card.createdAt,
             },
         });
     } catch (error) {
-        if (error instanceof mongoose.Error.CastError) {
-            return res.status(400).json({ status: 'error', message: `Invalid format for field ${error.path}` });
+        res.status(500).json({ status: 'error', message: (error as Error).message });
+    }
+};
+
+// ADMIN: POST /cards/create (Logic V1: Tự động tạo/tìm User)
+export const registerCard = async (req: Request, res: Response) => {
+    try {
+        const { card_id, owner_name, email, license_plate, vehicle_type, initial_balance } = req.body;
+
+        // 1. Kiểm tra thẻ tồn tại
+        const existingCard = await Card.findOne({ card_id });
+        if (existingCard) {
+            return res.status(400).json({ status: 'error', message: 'Mã thẻ đã tồn tại!' });
         }
-        res.status(400).json({ status: 'error', message: (error as Error).message });
+
+        let user: any = null;
+
+        // 2. LOGIC XỬ LÝ USER (Ưu điểm của V1)
+        if (email) {
+            user = await User.findOne({ email: email });
+            if (!user) {
+                return res.status(404).json({ 
+                    status: 'error', 
+                    message: `Không tìm thấy User với email: ${email}.` 
+                });
+            }
+        } else {
+            // Tìm theo tên hoặc tạo mới
+            user = await User.findOne({ name: owner_name });
+            if (!user) {
+                console.log(`User ${owner_name} chưa tồn tại. Đang tạo mới...`);
+                const autoEmail = `user_${card_id.toLowerCase().replace(/\s/g, '')}@parking.system`;
+                
+                user = await User.create({
+                    name: owner_name,
+                    email: autoEmail,
+                    password: '123456default',
+                    role: 'user',
+                    user_id: `U_${Date.now()}`
+                });
+            }
+        }
+
+        if (!user) {
+            return res.status(500).json({ status: 'error', message: 'Lỗi hệ thống: Không xác định được User.' });
+        }
+
+        // 3. Tạo thẻ
+        const newCard = new Card({
+            card_id,
+            user: user._id,
+            owner_name,     
+            license_plate,
+            vehicle_type: vehicle_type || 'car', // Mặc định là car nếu không gửi lên
+            balance: initial_balance || 0,
+            is_active: true
+        });
+
+        await newCard.save();
+
+        // 4. Nạp tiền khởi tạo (nếu có)
+        if (initial_balance && initial_balance > 0) {
+            await Transaction.create({
+                card: newCard._id,
+                type: 'RECHARGE',
+                amount: initial_balance,
+                payment_method: 'CASH',
+                description: 'Nạp tiền khởi tạo'
+            });
+        }
+
+        res.status(201).json({
+            status: 'success',
+            message: 'Đăng ký thẻ thành công.',
+            data: {
+                card_id: newCard.card_id,
+                linked_user: user.name,
+                email_linked: user.email,
+                vehicle_type: newCard.vehicle_type
+            },
+        });
+
+    } catch (error: any) {
+        console.error("Register Error:", error);
+        res.status(500).json({ status: 'error', message: error.message });
     }
 };
 
 // ADMIN: DELETE /cards/delete/{card_id}
+// (Cải tiến: Sử dụng Soft Delete thay vì xóa cứng để bảo toàn lịch sử)
 export const deleteCard = async (req: Request, res: Response) => {
     try {
         const { card_id } = req.params;
         const card = await Card.findOne({ card_id });
+        
         if (!card) {
             return res.status(404).json({ status: 'error', message: 'Card not found' });
         }
 
-        if (!card) {
-            return res.status(404).json({ status: 'error', message: 'Card not found' });
-        }
+        // Thay vì xóa cứng (findOneAndDelete), ta vô hiệu hóa
+        card.is_active = false;
+        await card.save();
 
         res.status(200).json({
             status: 'success',
@@ -179,7 +229,7 @@ export const adminRechargeCard = async (req: Request, res: Response) => {
         const card = await Card.findOne({ card_id: req.params.card_id, is_active: true }).session(session);
         if (!card) {
             await session.abortTransaction();
-            return res.status(400).json({ status: 'error', message: 'Invalid amount' });
+            return res.status(400).json({ status: 'error', message: 'Card not found or inactive' });
         }
 
         card.balance += amount;
@@ -220,22 +270,15 @@ export const parkingCheckIn = async (req: Request, res: Response) => {
 
         if (!location) {
             await session.abortTransaction();
-            return res.status(400).json({ 
-                status: 'error', 
-                message: 'Location là bắt buộc' 
-            });
+            return res.status(400).json({ status: 'error', message: 'Location là bắt buộc' });
         }
 
         const card = await Card.findOne({ card_id, is_active: true }).session(session);
         if (!card) {
             await session.abortTransaction();
-            return res.status(404).json({ 
-                status: 'error', 
-                message: 'Card not found or is inactive' 
-            });
+            return res.status(404).json({ status: 'error', message: 'Card not found or is inactive' });
         }
 
-        // Kiểm tra xem có session đang active không
         const activeSession = await ParkingSession.findOne({ 
             card: card._id, 
             status: 'ACTIVE' 
@@ -246,14 +289,10 @@ export const parkingCheckIn = async (req: Request, res: Response) => {
             return res.status(400).json({ 
                 status: 'error', 
                 message: 'Thẻ này đang có phiên đỗ xe chưa kết thúc',
-                data: {
-                    location: activeSession.location,
-                    timestamp_in: activeSession.timestamp_in
-                }
+                data: { location: activeSession.location, timestamp_in: activeSession.timestamp_in }
             });
         }
 
-        // Tạo parking session mới
         const parkingSession = new ParkingSession({
             card: card._id,
             location,
@@ -269,6 +308,7 @@ export const parkingCheckIn = async (req: Request, res: Response) => {
             data: {
                 session_id: parkingSession._id,
                 card_id: card.card_id,
+                vehicle_type: card.vehicle_type,
                 location: parkingSession.location,
                 timestamp_in: parkingSession.timestamp_in,
                 current_balance: card.balance
@@ -283,22 +323,31 @@ export const parkingCheckIn = async (req: Request, res: Response) => {
 };
 
 // ADMIN: POST /cards/{card_id}/parking/checkout
+// --- KẾT HỢP: Logic kiểm tra biển số (V2) + Logic tính giá theo loại xe (V1) ---
 export const parkingCheckOut = async (req: Request, res: Response) => {
     const session = await mongoose.startSession();
     session.startTransaction();
     try {
         const { card_id } = req.params;
+        const { license_plate } = req.body; // Lấy biển số từ request (V2)
 
         const card = await Card.findOne({ card_id, is_active: true }).session(session);
         if (!card) {
             await session.abortTransaction();
-            return res.status(404).json({ 
-                status: 'error', 
-                message: 'Card not found or is inactive' 
+            return res.status(404).json({ status: 'error', message: 'Card not found or is inactive' });
+        }
+
+        // 1. Kiểm tra biển số (Tính năng của V2 - Tăng bảo mật)
+        // Nếu API gửi lên biển số, ta kiểm tra khớp với thẻ không
+        if (license_plate && card.license_plate !== license_plate) {
+            await session.abortTransaction();
+            return res.status(400).json({
+                status: 'error',
+                message: `Biển số xe không khớp. Biển số xe đã đăng ký là ${card.license_plate}.`
             });
         }
 
-        // Tìm session đang active
+        // 2. Tìm session
         const activeSession = await ParkingSession.findOne({ 
             card: card._id, 
             status: 'ACTIVE' 
@@ -306,48 +355,46 @@ export const parkingCheckOut = async (req: Request, res: Response) => {
 
         if (!activeSession) {
             await session.abortTransaction();
-            return res.status(400).json({ 
-                status: 'error', 
-                message: 'Không tìm thấy phiên đỗ xe đang hoạt động cho thẻ này' 
-            });
+            return res.status(400).json({ status: 'error', message: 'Không tìm thấy phiên đỗ xe đang hoạt động' });
         }
 
-        // Tính toán thời gian và phí
+        // 3. Tính toán thời gian
         const timeOut = new Date();
         const timeIn = activeSession.timestamp_in;
         const durationMs = timeOut.getTime() - timeIn.getTime();
-        const durationHours = Math.ceil(durationMs / (1000 * 60 * 60)); // Làm tròn lên giờ tiếp theo
-        const parkingFee = -(durationHours * PARKING_FEE_PER_HOUR);
+        const durationHours = Math.ceil(durationMs / (1000 * 60 * 60)); 
 
-        // Kiểm tra số dư
-        if (card.balance < Math.abs(parkingFee)) {
+        // 4. Tính phí (Logic của V1 - Phân loại xe)
+        const feeAmount = calculateFee(card.vehicle_type, durationHours);
+        const parkingFee = -feeAmount; // Số tiền trừ đi (âm)
+
+        // 5. Kiểm tra số dư
+        if (card.balance < feeAmount) {
             await session.abortTransaction();
             return res.status(400).json({ 
                 status: 'error', 
-                message: `Số dư không đủ. Cần ${Math.abs(parkingFee)} VNĐ, còn ${card.balance} VNĐ`,
+                message: `Số dư không đủ. Cần ${feeAmount} VNĐ, còn ${card.balance} VNĐ`,
                 data: {
-                    required_amount: Math.abs(parkingFee),
+                    required_amount: feeAmount,
                     current_balance: card.balance,
-                    shortage: Math.abs(parkingFee) - card.balance
+                    shortage: feeAmount - card.balance
                 }
             });
         }
 
-        // Cập nhật session
+        // 6. Cập nhật và lưu
         activeSession.timestamp_out = timeOut;
         activeSession.status = 'COMPLETED';
         await activeSession.save({ session });
 
-        // Trừ tiền
         card.balance += parkingFee;
         await card.save({ session });
 
-        // Tạo transaction
         const transaction = new Transaction({
             card: card._id,
             type: 'PARKING',
             amount: parkingFee,
-            description: `Gửi xe tại ${activeSession.location} - ${durationHours} giờ`,
+            description: `Gửi xe ${card.vehicle_type} tại ${activeSession.location} - ${durationHours} giờ`,
             location: activeSession.location,
             timestamp_in: timeIn,
             timestamp_out: timeOut,
@@ -357,18 +404,17 @@ export const parkingCheckOut = async (req: Request, res: Response) => {
         await session.commitTransaction();
         res.status(200).json({
             status: 'success',
-            message: 'Check-out thành công. Đã trừ tiền gửi xe.',
+            message: 'Check-out thành công.',
             data: {
                 session_id: activeSession._id,
                 card_id: card.card_id,
-                location: activeSession.location,
+                vehicle_type: card.vehicle_type,
+                license_plate: card.license_plate,
                 timestamp_in: timeIn,
                 timestamp_out: timeOut,
-                parking_duration_hours: durationHours,
-                parking_fee: Math.abs(parkingFee),
-                previous_balance: card.balance - parkingFee,
-                new_balance: card.balance,
-                transaction_id: transaction.transaction_id
+                duration_hours: durationHours,
+                parking_fee: feeAmount,
+                new_balance: card.balance
             }
         });
     } catch (error) {
@@ -380,16 +426,13 @@ export const parkingCheckOut = async (req: Request, res: Response) => {
 };
 
 // ADMIN: GET /cards/{card_id}/parking/status
+// (Cải tiến: Tính tiền dự kiến dựa trên loại xe chính xác)
 export const getParkingStatus = async (req: Request, res: Response) => {
     try {
         const { card_id } = req.params;
-
         const card = await Card.findOne({ card_id });
         if (!card) {
-            return res.status(404).json({ 
-                status: 'error', 
-                message: 'Card not found' 
-            });
+            return res.status(404).json({ status: 'error', message: 'Card not found' });
         }
 
         const activeSession = await ParkingSession.findOne({ 
@@ -409,16 +452,18 @@ export const getParkingStatus = async (req: Request, res: Response) => {
             });
         }
 
-        // Tính toán thời gian và phí dự kiến
         const now = new Date();
         const durationMs = now.getTime() - activeSession.timestamp_in.getTime();
         const durationHours = Math.ceil(durationMs / (1000 * 60 * 60));
-        const estimatedFee = durationHours * PARKING_FEE_PER_HOUR;
+        
+        // Sử dụng hàm tính phí chung để hiển thị đúng giá tiền
+        const estimatedFee = calculateFee(card.vehicle_type, durationHours);
 
         res.status(200).json({
             status: 'success',
             data: {
                 card_id: card.card_id,
+                vehicle_type: card.vehicle_type,
                 has_active_session: true,
                 session_id: activeSession._id,
                 location: activeSession.location,
