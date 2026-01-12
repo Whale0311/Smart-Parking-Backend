@@ -5,6 +5,7 @@ import {
   getUserById,
   registerCard,
   deleteCard,
+  deleteUser,
   adminRechargeCard,
   getCardHistoryForAdmin,
   getCardDetails,
@@ -20,7 +21,7 @@ const router = Router();
 router.post('/create_user', createUser);
 router.get('/users', getAllUsers);
 router.get('/users/:user_id', getUserById);
-
+router.delete('/users/:user_id', deleteUser);
 // Card management
 router.post('/cards', registerCard);
 router.get('/cards/:card_id', getCardDetails);
