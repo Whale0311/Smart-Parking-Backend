@@ -5,7 +5,6 @@ import User from '../models/User';
 import ParkingSession from '../models/ParkingSession';
 import mongoose from 'mongoose';
 
-// Cấu hình giá (Nên đưa vào Config hoặc Database sau này)
 const PARKING_RATES = {
     motorbike_fixed: 4000,  // 4.000 VNĐ / lượt (xe máy)
     car_hourly: 5000        // 5.000 VNĐ / giờ (ô tô)
