@@ -57,6 +57,39 @@ export const createUser = async (req: Request, res: Response) => {
     }
 };
 
+// GET /users
+export const getAllUsers = async (req: Request, res: Response) => {
+    try {
+        const users = await User.find().select('-password').sort({ createdAt: -1 });
+        res.status(200).json({
+            status: 'success',
+            count: users.length,
+            data: users,
+        });
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: (error as Error).message });
+    }
+}
+
+// GET /users/{user_id}
+export const getUserById = async (req: Request, res: Response) => {
+    try {
+        const { user_id } = req.params;
+
+        const user = await User.findOne({ user_id }).select('-password');
+        if (!user) {
+            return res.status(404).json({ status: 'error', message: 'User not found' });
+        }
+
+        res.status(200).json({
+            status: 'success',
+            data: user,
+        });
+
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: (error as Error).message });
+    }
+}
 // GET /cards/{card_id}
 export const getCardDetails = async (req: Request, res: Response) => {
     try {

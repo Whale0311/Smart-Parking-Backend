@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import {
   createUser, // Import hàm mới
+  getAllUsers,
+  getUserById,
   registerCard,
   deleteCard,
   adminRechargeCard,
@@ -16,6 +18,8 @@ const router = Router();
 
 // User management
 router.post('/create_user', createUser);
+router.get('/users', getAllUsers);
+router.get('/users/:user_id', getUserById);
 
 // Card management
 router.post('/cards', registerCard);
