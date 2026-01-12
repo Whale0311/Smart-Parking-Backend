@@ -535,3 +535,29 @@ export const getCardHistoryForAdmin = async (req: Request, res: Response) => {
         res.status(500).json({ status: 'error', message: (error as Error).message });
     }
 };
+// ADMIN: DELETE /users/{user_id}
+export const deleteUser = async (req: Request, res: Response) => {
+    try {
+        const { user_id } = req.params;
+
+        // 1. Kiểm tra User có tồn tại không
+        const user = await User.findOne({ user_id });
+        if (!user) {
+            return res.status(404).json({ status: 'error', message: 'User not found' });
+        }
+
+        // 2. (Tùy chọn) Chặn xóa nếu User đang là Admin để tránh lỗi hệ thống
+        if (user.role === 'admin' && user.user_id === 'ADMIN_01') { // Ví dụ chặn admin gốc
+             return res.status(403).json({ status: 'error', message: 'Không thể xóa Admin gốc.' });
+        }
+
+        await User.findOneAndDelete({ user_id });
+        res.status(200).json({
+            status: 'success',
+            message: `Đã xóa người dùng ${user.name} thành công.`,
+        });
+
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: (error as Error).message });
+    }
+};
