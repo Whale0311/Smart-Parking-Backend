@@ -60,10 +60,22 @@ export const createUser = async (req: Request, res: Response) => {
 export const getAllUsers = async (req: Request, res: Response) => {
     try {
         const users = await User.find().select('-password').sort({ createdAt: -1 });
+        
+        // Get cards for each user
+        const usersWithCards = await Promise.all(
+            users.map(async (user) => {
+                const cards = await Card.find({ user: user._id }).select('-__v');
+                return {
+                    ...user.toObject(),
+                    cards
+                };
+            })
+        );
+        
         res.status(200).json({
             status: 'success',
-            count: users.length,
-            data: users,
+            count: usersWithCards.length,
+            data: usersWithCards,
         });
     } catch (error) {
         res.status(500).json({ status: 'error', message: (error as Error).message });
@@ -80,9 +92,15 @@ export const getUserById = async (req: Request, res: Response) => {
             return res.status(404).json({ status: 'error', message: 'User not found' });
         }
 
+        // Get all cards associated with this user
+        const cards = await Card.find({ user: user._id }).select('-__v');
+
         res.status(200).json({
             status: 'success',
-            data: user,
+            data: {
+                ...user.toObject(),
+                cards
+            },
         });
 
     } catch (error) {
