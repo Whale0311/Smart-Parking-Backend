@@ -217,7 +217,6 @@ export const registerCard = async (req: Request, res: Response) => {
 };
 
 // ADMIN: DELETE /cards/delete/{card_id}
-// (Cải tiến: Sử dụng Soft Delete thay vì xóa cứng để bảo toàn lịch sử)
 export const deleteCard = async (req: Request, res: Response) => {
     try {
         const { card_id } = req.params;
